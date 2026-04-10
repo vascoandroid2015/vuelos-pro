@@ -2,26 +2,24 @@ name: Bot Vuelos PRO
 
 on:
   schedule:
-    - cron: "0 */6 * * *"
-  workflow_dispatch:
+    - cron: "0 11 * * *"      # Ejecuta todos los días a las 12:00 (hora de España peninsular)
+  workflow_dispatch:          # Permite ejecución manual desde GitHub
 
 jobs:
   run:
     runs-on: ubuntu-latest
 
     steps:
-      - name: Descargar código
-        uses: actions/checkout@v3
+      - uses: actions/checkout@v4
 
-      - name: Instalar Python
-        uses: actions/setup-python@v4
+      - uses: actions/setup-python@v5
         with:
-          python-version: "3.10"
+          python-version: "3.11"
 
       - name: Instalar dependencias
         run: |
           pip install -r requirements.txt
-          playwright install
+          playwright install --with-deps
 
       - name: Ejecutar bot
         env:
