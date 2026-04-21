@@ -8,20 +8,28 @@ on:
 jobs:
   run:
     runs-on: ubuntu-latest
+    timeout-minutes: 180
 
     steps:
-      - uses: actions/checkout@v4
+      - name: Checkout
+        uses: actions/checkout@v4
 
-      - uses: actions/setup-python@v5
+      - name: Configurar Python
+        uses: actions/setup-python@v5
         with:
           python-version: "3.11"
 
       - name: Instalar dependencias
         run: |
+          python -m pip install --upgrade pip
           pip install -r requirements.txt
-          playwright install chromium
+          playwright install --with-deps chromium
 
       - name: Ejecutar bot
         env:
           TELEGRAM_TOKEN: ${{ secrets.TELEGRAM_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+          PRECIO_MAXIMO: "95"
+          DIAS_A_BUSCAR: "35"
+          TOP_RESULTADOS: "5"
         run: python main.py
