@@ -1,117 +1,195 @@
 import os
 import re
-import requests
-from bs4 import BeautifulSoup
-from playwright.sync_api import sync_playwright
 import time
+from datetime import datetime, timedelta
 
-TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN")
-CHAT_ID = os.getenv("TELEGRAM_CHAT_ID")
+import requests
+from playwright.sync_api import sync_playwright
 
-MIN_PRECIO = 5000
-MAX_PRECIO = 250000
+TOKEN = os.getenv("TELEGRAM_TOKEN")
+CHAT_ID = os.getenv("TELEGRAM_CHAT_ID", "@Vuelos_Peninsula_Canarias_Penins")
 
-def enviar(msg):
-    if not TELEGRAM_TOKEN or not CHAT_ID:
-        print("⚠️ TELEGRAM no configurado")
+PRECIO_MAXIMO = int(os.getenv("PRECIO_MAXIMO", "95"))
+DIAS_A_BUSCAR = int(os.getenv("DIAS_A_BUSCAR", "35"))
+TOP_RESULTADOS = int(os.getenv("TOP_RESULTADOS", "5"))
+
+ISLAS = ["fue", "ace"]
+PENINSULA = ["bio", "vit", "eas", "ovd"]
+
+CIUDADES = {
+    "fue": "Fuerteventura",
+    "ace": "Lanzarote",
+    "bio": "Bilbao",
+    "vit": "Vitoria",
+    "eas": "San Sebastián",
+    "ovd": "Asturias",
+}
+
+FUENTES = {
+    "google": "https://www.google.com/travel/flights?q=one%20way%20flights%20from%20{origen}%20to%20{destino}%20on%20{fecha}",
+    "skyscanner": "https://www.skyscanner.es/transport/flights/{origen}/{destino}/{fecha}/?adults=1&adultsv2=1&cabinclass=economy&rtn=0",
+    "momondo": "https://www.momondo.es/flight-search/{origen}-{destino}/{fecha}?sort=price_a",
+    "kayak": "https://www.kayak.es/flights/{origen}-{destino}/{fecha}?sort=price_a",
+}
+
+SELECTORES_PRECIO = [
+    '[data-testid*="price"]',
+    '[class*="price"]',
+    '[class*="Price"]',
+    'span[jsname="V67aGc"]',
+]
+
+USER_AGENT = (
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+    "AppleWebKit/537.36 (KHTML, like Gecko) "
+    "Chrome/134.0.0.0 Safari/537.36"
+)
+
+
+def enviar(msg: str) -> None:
+    if not TOKEN:
+        print("⚠️ TELEGRAM_TOKEN no configurado; se muestra por consola.")
         return
-    requests.post(f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage",
-                  data={"chat_id": CHAT_ID, "text": msg, "parse_mode": "HTML"})
 
-def limpiar_precio(texto):
-    try:
-        num = re.sub(r'[^\d]', '', texto)
-        return int(num) if num else None
-    except:
+    url = f"https://api.telegram.org/bot{TOKEN}/sendMessage"
+    response = requests.post(
+        url,
+        data={"chat_id": CHAT_ID, "text": msg, "parse_mode": "HTML"},
+        timeout=30,
+    )
+    if not response.ok:
+        print(f"⚠️ Error enviando a Telegram: {response.status_code} {response.text[:200]}")
+
+
+def limpiar_precio(texto: str):
+    if not texto:
         return None
 
-def extraer_parcela(texto):
-    texto = texto.lower()
-    patrones = [r'(\d{2,5})\s?m2?', r'parcela\s?de?\s?(\d{2,5})', r'finca\s?de?\s?(\d{2,5})']
-    for p in patrones:
-        m = re.search(p, texto)
-        if m:
-            return m.group(1) + " m²"
-    return "No especificado"
+    texto = texto.replace("\xa0", " ").strip()
+    coincidencias = re.findall(r"\d{1,4}(?:[.,]\d{1,2})?", texto)
+    if not coincidencias:
+        return None
 
-# ==================== MILANUNCIOS (con requests - más fiable) ====================
-def milanuncios_requests():
-    resultados = []
-    url = "https://www.milanuncios.com/venta-de-casas-en-asturias/"
-    headers = {
-        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/134.0.0.0 Safari/537.36"
-    }
+    for bruto in coincidencias:
+        valor = bruto.replace(".", "").replace(",", ".")
+        try:
+            precio = float(valor)
+        except ValueError:
+            continue
+        if 10 <= precio <= 2000:
+            return precio
+    return None
+
+
+def extraer_precios(page):
+    precios = []
+    vistos = set()
+
+    for selector in SELECTORES_PRECIO:
+        try:
+            textos = page.locator(selector).all_text_contents()
+        except Exception:
+            continue
+        for texto in textos[:20]:
+            precio = limpiar_precio(texto)
+            if precio and precio not in vistos:
+                vistos.add(precio)
+                precios.append(precio)
+    return precios
+
+
+def visitar_fuente(page, nombre: str, origen: str, destino: str, fecha: str):
+    url = FUENTES[nombre].format(origen=origen, destino=destino, fecha=fecha)
     try:
-        r = requests.get(url, headers=headers, timeout=30)
-        print(f"Milanuncios requests → Código HTTP: {r.status_code}")
-        
-        if r.status_code != 200:
-            print("   Bloqueado o error")
-            return []
-
-        soup = BeautifulSoup(r.text, "html.parser")
-        items = soup.select("article")[:60]
-        print(f"   Milanuncios → {len(items)} anuncios encontrados con BeautifulSoup")
-
-        for item in items:
-            try:
-                texto = item.get_text(" ", strip=True)
-                precio = limpiar_precio(texto)
-                link_tag = item.find("a")
-                link = "https://www.milanuncios.com" + link_tag["href"] if link_tag else url
-
-                if precio and MIN_PRECIO <= precio <= MAX_PRECIO:
-                    resultados.append({
-                        "titulo": texto[:160],
-                        "precio": precio,
-                        "link": link,
-                        "fuente": "Milanuncios"
-                    })
-            except:
-                continue
+        page.goto(url, wait_until="domcontentloaded", timeout=60000)
+        page.wait_for_timeout(3500)
+        precios = extraer_precios(page)
+        print(f"{nombre:<11} {origen}->{destino} {fecha}: {precios[:5]}")
+        return precios
     except Exception as e:
-        print(f"❌ Error Milanuncios requests: {e}")
-    return resultados
+        print(f"❌ {nombre} error {origen}-{destino} {fecha}: {e}")
+        return []
 
-# ==================== MAIN ====================
+
+def buscar_vuelos():
+    resultados = []
+
+    with sync_playwright() as p:
+        browser = p.chromium.launch(
+            headless=True,
+            args=["--no-sandbox", "--disable-blink-features=AutomationControlled"],
+        )
+        context = browser.new_context(
+            viewport={"width": 1280, "height": 800},
+            user_agent=USER_AGENT,
+            locale="es-ES",
+            timezone_id="Europe/Madrid",
+        )
+        page = context.new_page()
+
+        print(f"🔍 Buscando vuelos < {PRECIO_MAXIMO}€ para {DIAS_A_BUSCAR} días")
+        rutas = [(o, d) for o in ISLAS for d in PENINSULA] + [(o, d) for o in PENINSULA for d in ISLAS]
+
+        for offset in range(1, DIAS_A_BUSCAR + 1):
+            fecha = (datetime.now() + timedelta(days=offset)).strftime("%Y-%m-%d")
+            print(f"\n📅 {fecha}")
+            for origen, destino in rutas:
+                encontrados = []
+                for fuente in FUENTES:
+                    encontrados.extend(visitar_fuente(page, fuente, origen, destino, fecha))
+                    time.sleep(1.2)
+
+                for precio in sorted(set(encontrados)):
+                    if precio < PRECIO_MAXIMO:
+                        resultados.append(
+                            {
+                                "precio": precio,
+                                "origen": origen,
+                                "destino": destino,
+                                "fecha": fecha,
+                            }
+                        )
+
+        context.close()
+        browser.close()
+
+    unicos = {
+        (r["precio"], r["origen"], r["destino"], r["fecha"]): r
+        for r in resultados
+    }
+    ordenados = sorted(unicos.values(), key=lambda r: (r["precio"], r["fecha"]))
+    return ordenados[:TOP_RESULTADOS]
+
+
+def formatear(resultado: dict) -> str:
+    fecha_txt = datetime.strptime(resultado["fecha"], "%Y-%m-%d").strftime("%d/%m/%Y")
+    return (
+        "✈️ <b>VUELO BARATO DETECTADO</b>\n\n"
+        f"🛫 Origen: <b>{CIUDADES[resultado['origen']]}</b>\n"
+        f"🛬 Destino: <b>{CIUDADES[resultado['destino']]}</b>\n"
+        f"📅 Fecha: <b>{fecha_txt}</b>\n\n"
+        f"💰 Precio: <b>{resultado['precio']:.0f}€</b>\n\n"
+        "🔗 Buscar ahora: https://www.google.com/travel/flights"
+    )
+
+
 def main():
-    print("🚀 Iniciando bot - Probando Milanuncios primero (más fácil de scrapear)...")
-
-    todas = milanuncios_requests()
-
-    # Si Milanuncios da 0, intentamos con Playwright (solo para debug)
-    if len(todas) == 0:
-        print("Milanuncios requests falló → probando Playwright en todos...")
-        with sync_playwright() as p:
-            browser = p.chromium.launch(headless=True, args=["--no-sandbox"])
-            page = browser.new_page()
-            page.goto("https://www.milanuncios.com/venta-de-casas-en-asturias/", timeout=60000)
-            page.wait_for_timeout(8000)
-            page.screenshot(path="debug_milanuncios.png")
-            browser.close()
-
-    print(f"Total casas encontradas con precio válido: {len(todas)}")
-
-    enviados = 0
-    for item in todas[:15]:   # máximo 15 al día
-        msg = f"""🏠 <b>CASA EN ASTURIAS</b> - {item['fuente']}
-
-{item['titulo']}
-
-💰 <b>{item['precio']:,} €</b>
-🌳 Parcela: {extraer_parcela(item['titulo'])}
-
-🔗 {item['link']}
-"""
-        enviar(msg)
-        enviados += 1
-        time.sleep(1.5)
-
-    if enviados == 0:
-        enviar("❌ Hoy no se encontraron casas baratas.\nPrueba la captura debug_milanuncios.png")
-        print("❌ Sin resultados")
+    vuelos = buscar_vuelos()
+    if vuelos:
+        print(f"✅ Encontrados {len(vuelos)} vuelos baratos")
+        for vuelo in vuelos:
+            mensaje = formatear(vuelo)
+            print(mensaje)
+            print("-" * 60)
+            enviar(mensaje)
     else:
-        print(f"✅ Enviadas {enviados} casas a Telegram")
+        mensaje = (
+            f"❌ No se encontraron vuelos por debajo de {PRECIO_MAXIMO}€ "
+            f"en los próximos {DIAS_A_BUSCAR} días."
+        )
+        print(mensaje)
+        enviar(mensaje)
+
 
 if __name__ == "__main__":
     main()
