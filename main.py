@@ -2,6 +2,7 @@ import os
 import re
 import time
 from datetime import datetime, timedelta
+from urllib.parse import quote_plus
 
 import requests
 from playwright.sync_api import sync_playwright
@@ -12,6 +13,7 @@ CHAT_ID = os.getenv("TELEGRAM_CHAT_ID", "@Vuelos_Peninsula_Canarias_Penins")
 PRECIO_MAXIMO = int(os.getenv("PRECIO_MAXIMO", "95"))
 DIAS_A_BUSCAR = int(os.getenv("DIAS_A_BUSCAR", "35"))
 TOP_RESULTADOS = int(os.getenv("TOP_RESULTADOS", "5"))
+MAX_ESCALA_MINUTOS = int(os.getenv("MAX_ESCALA_MINUTOS", "1440"))
 
 ISLAS = ["fue", "ace"]
 PENINSULA = ["bio", "vit", "eas", "ovd"]
@@ -25,11 +27,26 @@ CIUDADES = {
     "ovd": "Asturias",
 }
 
+
+def google_flights_url(origen: str, destino: str, fecha: str) -> str:
+    q = quote_plus(
+        f"one way flights from {origen} to {destino} on {fecha} with max layover {MAX_ESCALA_MINUTOS} minutes"
+    )
+    return f"https://www.google.com/travel/flights?q={q}"
+
+
 FUENTES = {
-    "google": "https://www.google.com/travel/flights?q=one%20way%20flights%20from%20{origen}%20to%20{destino}%20on%20{fecha}",
-    "skyscanner": "https://www.skyscanner.es/transport/flights/{origen}/{destino}/{fecha}/?adults=1&adultsv2=1&cabinclass=economy&rtn=0",
-    "momondo": "https://www.momondo.es/flight-search/{origen}-{destino}/{fecha}?sort=price_a",
-    "kayak": "https://www.kayak.es/flights/{origen}-{destino}/{fecha}?sort=price_a",
+    "google": google_flights_url,
+    "skyscanner": lambda origen, destino, fecha: (
+        f"https://www.skyscanner.es/transport/flights/{origen}/{destino}/{fecha}/"
+        f"?adults=1&adultsv2=1&cabinclass=economy&rtn=0&max_stops=1&max_stopover_minutes={MAX_ESCALA_MINUTOS}"
+    ),
+    "momondo": lambda origen, destino, fecha: (
+        f"https://www.momondo.es/flight-search/{origen}-{destino}/{fecha}?sort=price_a&fs=stops=-0,1;maxlayover={MAX_ESCALA_MINUTOS}"
+    ),
+    "kayak": lambda origen, destino, fecha: (
+        f"https://www.kayak.es/flights/{origen}-{destino}/{fecha}?sort=price_a&fs=stops=-0,1;maxlayover={MAX_ESCALA_MINUTOS}"
+    ),
 }
 
 SELECTORES_PRECIO = [
@@ -57,6 +74,7 @@ def enviar(msg: str) -> None:
         data={"chat_id": CHAT_ID, "text": msg, "parse_mode": "HTML"},
         timeout=30,
     )
+
     if not response.ok:
         print(f"⚠️ Error enviando a Telegram: {response.status_code} {response.text[:200]}")
 
@@ -99,7 +117,8 @@ def extraer_precios(page):
 
 
 def visitar_fuente(page, nombre: str, origen: str, destino: str, fecha: str):
-    url = FUENTES[nombre].format(origen=origen, destino=destino, fecha=fecha)
+    url_builder = FUENTES[nombre]
+    url = url_builder(origen, destino, fecha)
     try:
         page.goto(url, wait_until="domcontentloaded", timeout=60000)
         page.wait_for_timeout(3500)
@@ -127,7 +146,10 @@ def buscar_vuelos():
         )
         page = context.new_page()
 
-        print(f"🔍 Buscando vuelos < {PRECIO_MAXIMO}€ para {DIAS_A_BUSCAR} días")
+        print(
+            f"🔍 Buscando vuelos < {PRECIO_MAXIMO}€ para {DIAS_A_BUSCAR} días "
+            f"con escala máxima de {MAX_ESCALA_MINUTOS} minutos"
+        )
         rutas = [(o, d) for o in ISLAS for d in PENINSULA] + [(o, d) for o in PENINSULA for d in ISLAS]
 
         for offset in range(1, DIAS_A_BUSCAR + 1):
@@ -164,11 +186,12 @@ def buscar_vuelos():
 def formatear(resultado: dict) -> str:
     fecha_txt = datetime.strptime(resultado["fecha"], "%Y-%m-%d").strftime("%d/%m/%Y")
     return (
-        "✈️ <b>VUELO BARATO DETECTADO</b>\n\n"
-        f"🛫 Origen: <b>{CIUDADES[resultado['origen']]}</b>\n"
-        f"🛬 Destino: <b>{CIUDADES[resultado['destino']]}</b>\n"
-        f"📅 Fecha: <b>{fecha_txt}</b>\n\n"
-        f"💰 Precio: <b>{resultado['precio']:.0f}€</b>\n\n"
+        "✈️ VUELO BARATO DETECTADO\n\n"
+        f"🛫 Origen: {CIUDADES[resultado['origen']]}\n"
+        f"🛬 Destino: {CIUDADES[resultado['destino']]}\n"
+        f"📅 Fecha: {fecha_txt}\n\n"
+        f"💰 Precio: {resultado['precio']:.0f}€\n"
+        f"⏱️ Escala máxima configurada: {MAX_ESCALA_MINUTOS} min\n\n"
         "🔗 Buscar ahora: https://www.google.com/travel/flights"
     )
 
@@ -185,7 +208,7 @@ def main():
     else:
         mensaje = (
             f"❌ No se encontraron vuelos por debajo de {PRECIO_MAXIMO}€ "
-            f"en los próximos {DIAS_A_BUSCAR} días."
+            f"en los próximos {DIAS_A_BUSCAR} días con escala máxima de {MAX_ESCALA_MINUTOS} minutos."
         )
         print(mensaje)
         enviar(mensaje)

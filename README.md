@@ -1,38 +1,27 @@
-# Bot Vuelos PRO
+# Bot Casas Asturias max - versión corregida final
 
-Bot en Python para buscar vuelos baratos entre Canarias y Península usando Playwright y enviar avisos a Telegram.
+Esta versión incluye:
 
-## Incluye
+- control persistente de anuncios ya enviados a Telegram
+- prevención de duplicados por URL
+- detección de cambios en precio, título y ubicación
+- documento de control legible en `data/anuncios_control.md`
+- almacenamiento del registro maestro en `data/sent_ads_registry.json`
+- eliminación del mensaje final de Telegram llamado resumen debug
 
-- `main.py`: script principal ya corregido
-- `requirements.txt`: dependencias
-- `.github/workflows/vuelos.yml`: automatización diaria con GitHub Actions
+## Comportamiento
 
-## Rutas configuradas
+- Anuncio nuevo: se envía
+- Anuncio ya conocido sin cambios: no se envía
+- Anuncio con cambios: se vuelve a enviar indicando los cambios
+- Si cambia el precio: se muestra también el precio anterior
 
-- Islas: Fuerteventura (`fue`), Lanzarote (`ace`)
-- Península: Bilbao (`bio`), Vitoria (`vit`), San Sebastián (`eas`), Asturias (`ovd`)
+## Uso
 
-## Secrets necesarios en GitHub
-
-- `TELEGRAM_TOKEN`: token de tu bot
-- `TELEGRAM_CHAT_ID`: canal o chat destino, por ejemplo `@tu_canal`
-
-## Opciones configurables
-
-Puedes cambiar por variables de entorno:
-
-- `PRECIO_MAXIMO` (por defecto `95`)
-- `DIAS_A_BUSCAR` (por defecto `35`)
-- `TOP_RESULTADOS` (por defecto `5`)
-
-## Despliegue
-
-1. Sube el contenido a un repositorio.
-2. Añade los secrets en GitHub.
-3. Activa GitHub Actions.
-4. Lanza `workflow_dispatch` para probar.
-
-## Nota importante
-
-Los comparadores de vuelos cambian selectores y pueden aplicar bloqueos anti-bot. El código está dejado bastante más robusto que el adjunto original, pero puede requerir retoques futuros en los selectores si alguna web cambia.
+```bash
+pip install -r requirements.txt
+playwright install chromium
+export TELEGRAM_TOKEN='tu_token'
+export TELEGRAM_CHAT_ID='tu_chat_id'
+python main.py
+```
